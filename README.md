@@ -378,6 +378,23 @@ docker compose down            # stop and remove the container
   - Required: `item_id`, `progress` (in seconds)
   - Optional: `duration` (in seconds), `is_finished` (boolean; sends true or false when provided), `episode_id` (for podcasts)
 
+### Item Metadata
+
+- **update_item_media** - Update the metadata of a library item. Only supplied fields are changed; an empty string or array clears a field
+  - Required: `item_id`
+  - Optional: `title`, `subtitle`, `description`, `publisher`, `language`, `isbn`, `asin`, `published_year`, `published_date`, `explicit` (boolean), `abridged` (boolean), `authors`, `narrators`, `genres`, `tags` (arrays of strings), `series` (array of objects with `name` and optional `sequence`)
+  - At least one metadata field is required
+- **batch_update_items** - Update the metadata of several library items in one request
+  - Required: `updates` (array of objects, each with `item_id` plus the same fields as `update_item_media`)
+- **match_item** - Match a library item against a metadata provider and apply the result
+  - Required: `item_id`
+  - Optional: `provider` (for example `audible.de`; Audiobookshelf falls back to Google Books when omitted), `title`, `author`, `isbn`, `asin`, `override_defaults` (boolean; overwrite fields that already have a value)
+- **delete_item** - Delete a library item
+  - Required: `item_id`, `confirm` (must be `true`)
+  - Optional: `hard` (boolean; also deletes the item's files from disk and cannot be undone). Without it only the database entry is removed, and a rescan can add the item again while its files remain
+
+These tools modify data, so the API key needs a user with update (and for `delete_item` delete) permission.
+
 ### Backups
 
 - **backups** - List all server backups
