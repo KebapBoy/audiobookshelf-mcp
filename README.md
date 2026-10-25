@@ -393,6 +393,8 @@ docker compose down            # stop and remove the container
   - Required: `title`, or `item_id` to search with the item's own title and author
   - Optional: `author`, `provider` (for example `audible.de`; Audiobookshelf falls back to Google Books when omitted)
 - **set_item_cover** - Set the cover of a library item from an image URL, for example the cover URL of a `search_books` result
+- **update_author** - Update an author's name, description or Audible ASIN; only the passed fields change
+- **set_author_image** - Set the portrait of an author from an image URL
   - Required: `item_id`, `url` (http or https)
   - Needs a user with upload permission. `match_item` with `override_cover` does not, because the server downloads the cover itself
 - **compare_covers** - Compare the current cover of an item, in its original size, with candidate images by resolution and file size, to decide whether a provider's cover is better

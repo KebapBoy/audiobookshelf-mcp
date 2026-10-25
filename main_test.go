@@ -2123,6 +2123,8 @@ func TestRegisteredToolNames(t *testing.T) {
 		"match_item",
 		"search_books",
 		"set_item_cover",
+		"update_author",
+		"set_author_image",
 		"compare_covers",
 		"delete_item",
 		"search_chapters",

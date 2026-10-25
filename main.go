@@ -1173,6 +1173,22 @@ func newMCPServer() *server.MCPServer {
 	)
 	setItemCoverTool := mcp.NewTool("set_item_cover", setItemCoverOpts...)
 
+	updateAuthorOpts := append(withABSAuth(),
+		mcp.WithDescription("Update an author's name, description or Audible ASIN. Only the fields that are passed change"),
+		mcp.WithString("author_id", mcp.Required(), mcp.Description("Author ID")),
+		mcp.WithString("name", mcp.Description("Author name")),
+		mcp.WithString("description", mcp.Description("Author description; an empty string clears it")),
+		mcp.WithString("asin", mcp.Description("Audible author ASIN; an empty string clears it")),
+	)
+	updateAuthorTool := mcp.NewTool("update_author", updateAuthorOpts...)
+
+	setAuthorImageOpts := append(withABSAuth(),
+		mcp.WithDescription("Set the portrait of an author from an image URL. Needs a user with upload permission"),
+		mcp.WithString("author_id", mcp.Required(), mcp.Description("Author ID")),
+		mcp.WithString("url", mcp.Required(), mcp.Description("http or https URL of the image")),
+	)
+	setAuthorImageTool := mcp.NewTool("set_author_image", setAuthorImageOpts...)
+
 	compareCoversOpts := append(withABSAuth(),
 		mcp.WithDescription("Compare the current cover of a library item, in its original size, with candidate images by resolution and file size, to decide whether a provider's cover is better. Candidates must be public http or https addresses. Reads JPEG, PNG and GIF dimensions"),
 		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
@@ -1599,6 +1615,8 @@ func newMCPServer() *server.MCPServer {
 	s.AddTool(matchItemTool, handleMatchItem)
 	s.AddTool(searchBooksTool, handleSearchBooks)
 	s.AddTool(setItemCoverTool, handleSetItemCover)
+	s.AddTool(updateAuthorTool, handleUpdateAuthor)
+	s.AddTool(setAuthorImageTool, handleSetAuthorImage)
 	s.AddTool(compareCoversTool, handleCompareCovers)
 	s.AddTool(deleteItemTool, handleDeleteItem)
 
