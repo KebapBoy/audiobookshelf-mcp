@@ -388,7 +388,16 @@ docker compose down            # stop and remove the container
   - Required: `updates` (array of objects, each with `item_id` plus the same fields as `update_item_media`)
 - **match_item** - Match a library item against a metadata provider and apply the result. Like `update_item_media`, it returns a summary (metadata with long texts shortened, plus file and chapter counts) instead of the whole item
   - Required: `item_id`
-  - Optional: `provider` (for example `audible.de`; Audiobookshelf falls back to Google Books when omitted), `title`, `author`, `isbn`, `asin`, `override_defaults` (boolean; overwrite fields that already have a value)
+  - Optional: `provider` (for example `audible.de`; Audiobookshelf falls back to Google Books when omitted), `title`, `author`, `isbn`, `asin`, `override_details` (boolean; overwrite metadata fields that already have a value, otherwise only empty ones are filled), `override_cover` (boolean; replace the existing cover with the provider's, otherwise only a missing cover is set). When both are omitted, Audiobookshelf follows its server setting for preferring matched metadata
+- **search_books** - Search a metadata provider and return every match with all fields it offers (title, subtitle, author, narrator, series, genres, description, publisher, year, language, ASIN, ISBN, cover URL and more) without changing anything. Use it to judge the matches before saving values with `update_item_media`
+  - Required: `title`, or `item_id` to search with the item's own title and author
+  - Optional: `author`, `provider` (for example `audible.de`; Audiobookshelf falls back to Google Books when omitted)
+- **set_item_cover** - Set the cover of a library item from an image URL, for example the cover URL of a `search_books` result
+  - Required: `item_id`, `url` (http or https)
+  - Needs a user with upload permission. `match_item` with `override_cover` does not, because the server downloads the cover itself
+- **compare_covers** - Compare the current cover of an item, in its original size, with candidate images by resolution and file size, to decide whether a provider's cover is better
+  - Required: `item_id`, `urls` (one to ten image URLs, for example the cover URLs of `search_books` results)
+  - A candidate counts as better when it has at least 10% more pixels than the current cover; the result names the largest one as `best`. Dimensions are read for JPEG, PNG and GIF. Candidates must be public http or https addresses, loopback, private and link-local addresses are refused
 - **delete_item** - Delete a library item
   - Required: `item_id`, `confirm` (must be `true`)
   - Optional: `hard` (boolean; also deletes the item's files from disk and cannot be undone). Without it only the database entry is removed, and a rescan can add the item again while its files remain
@@ -463,6 +472,7 @@ The AI assistant will use the appropriate MCP tools to fetch information and man
 - `main.go` - Server implementation: Audiobookshelf HTTP helpers (`absGET`, `absPOST`, `absPATCH`, …), handler factories, tool definitions in `newMCPServer()`, and transport selection in `main()`
 - `item_chapters.go` - Chapter lookup and the Audible chapter logic (branding removal, snapping to file boundaries)
 - `item_tracks.go` - Track sorting and reordering
+- `item_search.go`, `item_cover.go` - Provider search without applying, and cover setting and comparison
 - `*_test.go` - Tests against mock Audiobookshelf servers (`httptest`), including tests that call tools through the registered MCP server
 - `Dockerfile`, `docker-compose.yml`, `.env.example` - Container image and Compose setup for the HTTP transport
 - `.github/workflows/main.yaml` - CI: runs tests and builds on pushes to `main` and on pull requests; publishes releases via GoReleaser on `v*` tags

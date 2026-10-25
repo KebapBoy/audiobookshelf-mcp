@@ -255,27 +255,29 @@ func TestMatchItemTool(t *testing.T) {
 		{
 			name: "all fields",
 			params: map[string]interface{}{
-				"item_id":           "book-1",
-				"provider":          "audible.de",
-				"title":             "Das Paket",
-				"author":            "Sebastian Fitzek",
-				"isbn":              "9783426199541",
-				"asin":              "B01A2B3C4D",
-				"override_defaults": true,
-			},
-			payload: map[string]interface{}{
+				"item_id":          "book-1",
 				"provider":         "audible.de",
 				"title":            "Das Paket",
 				"author":           "Sebastian Fitzek",
 				"isbn":             "9783426199541",
 				"asin":             "B01A2B3C4D",
-				"overrideDefaults": true,
+				"override_details": true,
+				"override_cover":   true,
+			},
+			payload: map[string]interface{}{
+				"provider":        "audible.de",
+				"title":           "Das Paket",
+				"author":          "Sebastian Fitzek",
+				"isbn":            "9783426199541",
+				"asin":            "B01A2B3C4D",
+				"overrideDetails": true,
+				"overrideCover":   true,
 			},
 		},
 		{
-			name:    "explicit override_defaults false is sent",
-			params:  map[string]interface{}{"item_id": "book-1", "override_defaults": false},
-			payload: map[string]interface{}{"overrideDefaults": false},
+			name:    "explicit false values are sent",
+			params:  map[string]interface{}{"item_id": "book-1", "override_details": false, "override_cover": false},
+			payload: map[string]interface{}{"overrideDetails": false, "overrideCover": false},
 		},
 	}
 

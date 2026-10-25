@@ -733,8 +733,10 @@ func handleMatchItem(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 			payload[key] = value
 		}
 	}
-	if _, ok := request.GetArguments()["override_defaults"]; ok {
-		payload["overrideDefaults"] = request.GetBool("override_defaults", false)
+	for param, key := range map[string]string{"override_details": "overrideDetails", "override_cover": "overrideCover"} {
+		if _, ok := request.GetArguments()[param]; ok {
+			payload[key] = request.GetBool(param, false)
+		}
 	}
 
 	body, err := absPOST(ctx, baseURL, token, fmt.Sprintf("/items/%s/match", itemID), payload)
@@ -1150,9 +1152,33 @@ func newMCPServer() *server.MCPServer {
 		mcp.WithString("author", mcp.Description("Author to search for (defaults to the item's author)")),
 		mcp.WithString("isbn", mcp.Description("ISBN to search for")),
 		mcp.WithString("asin", mcp.Description("ASIN to look up directly")),
-		mcp.WithBoolean("override_defaults", mcp.Description("Overwrite fields that already have a value instead of only filling empty ones")),
+		mcp.WithBoolean("override_details", mcp.Description("Overwrite metadata fields that already have a value instead of only filling empty ones")),
+		mcp.WithBoolean("override_cover", mcp.Description("Replace the existing cover with the one from the provider instead of only setting a missing cover")),
 	)
 	matchItemTool := mcp.NewTool("match_item", matchItemOpts...)
+
+	searchBooksOpts := append(withABSAuth(),
+		mcp.WithDescription("Search a metadata provider and return every match with all fields it offers (title, subtitle, author, narrator, series, genres, description, publisher, year, language, ASIN, ISBN, cover URL and more) without changing anything. Judge the results, then save the chosen values with update_item_media. Without a provider Audiobookshelf uses Google Books, so pass the library's provider such as audible.de"),
+		mcp.WithString("title", mcp.Description("Title to search for. Required unless item_id is given")),
+		mcp.WithString("author", mcp.Description("Author to search for")),
+		mcp.WithString("provider", mcp.Description("Metadata provider, e.g. audible.de, audible, google, openlibrary")),
+		mcp.WithString("item_id", mcp.Description("Library item ID; searches with the item's own title and author unless title or author are given")),
+	)
+	searchBooksTool := mcp.NewTool("search_books", searchBooksOpts...)
+
+	setItemCoverOpts := append(withABSAuth(),
+		mcp.WithDescription("Set the cover of a library item from an image URL, for example the cover URL of a search_books result. Needs a user with upload permission"),
+		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
+		mcp.WithString("url", mcp.Required(), mcp.Description("http or https URL of the cover image")),
+	)
+	setItemCoverTool := mcp.NewTool("set_item_cover", setItemCoverOpts...)
+
+	compareCoversOpts := append(withABSAuth(),
+		mcp.WithDescription("Compare the current cover of a library item, in its original size, with candidate images by resolution and file size, to decide whether a provider's cover is better. Candidates must be public http or https addresses. Reads JPEG, PNG and GIF dimensions"),
+		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
+		mcp.WithArray("urls", mcp.Required(), mcp.Description("One to ten candidate image URLs, for example the cover URLs of search_books results"), mcp.WithStringItems()),
+	)
+	compareCoversTool := mcp.NewTool("compare_covers", compareCoversOpts...)
 
 	deleteItemOpts := append(withABSAuth(),
 		mcp.WithDescription("Delete a library item. By default only the database entry is removed; a rescan can add it again while its files remain"),
@@ -1570,6 +1596,9 @@ func newMCPServer() *server.MCPServer {
 	s.AddTool(updateItemMediaTool, handleUpdateItemMedia)
 	s.AddTool(batchUpdateItemsTool, handleBatchUpdateItems)
 	s.AddTool(matchItemTool, handleMatchItem)
+	s.AddTool(searchBooksTool, handleSearchBooks)
+	s.AddTool(setItemCoverTool, handleSetItemCover)
+	s.AddTool(compareCoversTool, handleCompareCovers)
 	s.AddTool(deleteItemTool, handleDeleteItem)
 
 	// Add chapter and track handlers
