@@ -453,6 +453,329 @@ func absPATCH(ctx context.Context, baseURL, token, path string, payload interfac
 	return body, nil
 }
 
+func absDELETE(ctx context.Context, baseURL, token, path string) ([]byte, error) {
+	fullURL := strings.TrimSuffix(baseURL, "/") + path
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call ABS API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ABS API returned %s: %s", resp.Status, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	return body, nil
+}
+
+// mediaUpdateStringFields maps tool parameter names of plain string metadata
+// fields to the key Audiobookshelf expects in the metadata object.
+var mediaUpdateStringFields = map[string]string{
+	"title":          "title",
+	"subtitle":       "subtitle",
+	"description":    "description",
+	"publisher":      "publisher",
+	"language":       "language",
+	"isbn":           "isbn",
+	"asin":           "asin",
+	"published_year": "publishedYear",
+	"published_date": "publishedDate",
+}
+
+// mediaUpdateBoolFields maps tool parameter names of boolean metadata fields
+// to the key Audiobookshelf expects in the metadata object.
+var mediaUpdateBoolFields = map[string]string{
+	"explicit": "explicit",
+	"abridged": "abridged",
+}
+
+func stringSliceArg(args map[string]interface{}, key string) ([]string, error) {
+	items, ok := args[key].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array of strings", key)
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		value, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s must be an array of strings", key)
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
+// buildMediaUpdate turns tool arguments into the {metadata, tags} payload of
+// PATCH /items/{id}/media. Only fields that are present are sent, so omitted
+// fields stay untouched, while an empty string or array clears the field.
+func buildMediaUpdate(args map[string]interface{}) (map[string]interface{}, error) {
+	metadata := map[string]interface{}{}
+	payload := map[string]interface{}{}
+
+	for param, key := range mediaUpdateStringFields {
+		value, ok := args[param]
+		if !ok {
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s must be a string", param)
+		}
+		metadata[key] = text
+	}
+
+	for param, key := range mediaUpdateBoolFields {
+		value, ok := args[param]
+		if !ok {
+			continue
+		}
+		flag, ok := value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("%s must be a boolean", param)
+		}
+		metadata[key] = flag
+	}
+
+	if _, ok := args["authors"]; ok {
+		names, err := stringSliceArg(args, "authors")
+		if err != nil {
+			return nil, err
+		}
+		authors := make([]map[string]interface{}, 0, len(names))
+		for _, name := range names {
+			authors = append(authors, map[string]interface{}{"name": name})
+		}
+		metadata["authors"] = authors
+	}
+
+	for _, param := range []string{"narrators", "genres"} {
+		if _, ok := args[param]; !ok {
+			continue
+		}
+		values, err := stringSliceArg(args, param)
+		if err != nil {
+			return nil, err
+		}
+		metadata[param] = values
+	}
+
+	if value, ok := args["series"]; ok {
+		items, ok := value.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("series must be an array of objects with name and optional sequence")
+		}
+		series := make([]map[string]interface{}, 0, len(items))
+		for _, item := range items {
+			entry, ok := item.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("series must be an array of objects with name and optional sequence")
+			}
+			name, ok := entry["name"].(string)
+			if !ok || strings.TrimSpace(name) == "" {
+				return nil, fmt.Errorf("each series entry requires a non-blank name")
+			}
+			seriesEntry := map[string]interface{}{"name": name}
+			if sequence, ok := entry["sequence"]; ok {
+				text, ok := sequence.(string)
+				if !ok {
+					return nil, fmt.Errorf("series sequence must be a string")
+				}
+				seriesEntry["sequence"] = text
+			}
+			series = append(series, seriesEntry)
+		}
+		metadata["series"] = series
+	}
+
+	if len(metadata) > 0 {
+		payload["metadata"] = metadata
+	}
+
+	if _, ok := args["tags"]; ok {
+		tags, err := stringSliceArg(args, "tags")
+		if err != nil {
+			return nil, err
+		}
+		payload["tags"] = tags
+	}
+
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("at least one metadata field must be provided")
+	}
+
+	return payload, nil
+}
+
+// mediaUpdateToolOptions describes the metadata fields shared by
+// update_item_media. batch_update_items documents the same fields per entry.
+func mediaUpdateToolOptions() []mcp.ToolOption {
+	return []mcp.ToolOption{
+		mcp.WithString("title", mcp.Description("Title")),
+		mcp.WithString("subtitle", mcp.Description("Subtitle")),
+		mcp.WithString("description", mcp.Description("Description")),
+		mcp.WithString("publisher", mcp.Description("Publisher")),
+		mcp.WithString("language", mcp.Description("Language")),
+		mcp.WithString("isbn", mcp.Description("ISBN")),
+		mcp.WithString("asin", mcp.Description("ASIN")),
+		mcp.WithString("published_year", mcp.Description("Published year, e.g. \"2013\"")),
+		mcp.WithString("published_date", mcp.Description("Published date")),
+		mcp.WithBoolean("explicit", mcp.Description("Explicit content flag")),
+		mcp.WithBoolean("abridged", mcp.Description("Abridged flag")),
+		mcp.WithArray("authors", mcp.Description("Author names. Replaces the existing authors; an empty array clears them"), mcp.WithStringItems()),
+		mcp.WithArray("narrators", mcp.Description("Narrator names. Replaces the existing narrators; an empty array clears them"), mcp.WithStringItems()),
+		mcp.WithArray("genres", mcp.Description("Genres. Replaces the existing genres; an empty array clears them"), mcp.WithStringItems()),
+		mcp.WithArray("tags", mcp.Description("Tags. Replaces the existing tags; an empty array clears them"), mcp.WithStringItems()),
+		mcp.WithArray("series", mcp.Description("Series as objects with name and optional sequence. Replaces the existing series; an empty array clears them"),
+			mcp.Items(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name":     map[string]interface{}{"type": "string"},
+					"sequence": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"name"},
+			})),
+	}
+}
+
+func handleUpdateItemMedia(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	baseURL, token, err := getABSConfig(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	itemID, err := requireNonBlankString(request, "item_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	payload, err := buildMediaUpdate(request.GetArguments())
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	body, err := absPATCH(ctx, baseURL, token, fmt.Sprintf("/items/%s/media", itemID), payload)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	return mcp.NewToolResultText(string(body)), nil
+}
+
+func handleBatchUpdateItems(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	baseURL, token, err := getABSConfig(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	entries, ok := request.GetArguments()["updates"].([]interface{})
+	if !ok || len(entries) == 0 {
+		return mcp.NewToolResultError("updates must be a non-empty array"), nil
+	}
+
+	payload := make([]map[string]interface{}, 0, len(entries))
+	for i, entry := range entries {
+		fields, ok := entry.(map[string]interface{})
+		if !ok {
+			return mcp.NewToolResultError(fmt.Sprintf("updates[%d] must be an object", i)), nil
+		}
+		itemID, ok := fields["item_id"].(string)
+		if !ok || strings.TrimSpace(itemID) == "" {
+			return mcp.NewToolResultError(fmt.Sprintf("updates[%d] requires a non-blank item_id", i)), nil
+		}
+		mediaPayload, err := buildMediaUpdate(fields)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("updates[%d]: %s", i, err)), nil
+		}
+		payload = append(payload, map[string]interface{}{
+			"id":           itemID,
+			"mediaPayload": mediaPayload,
+		})
+	}
+
+	body, err := absPOST(ctx, baseURL, token, "/items/batch/update", payload)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	return mcp.NewToolResultText(string(body)), nil
+}
+
+func handleMatchItem(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	baseURL, token, err := getABSConfig(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	itemID, err := requireNonBlankString(request, "item_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	payload := map[string]interface{}{}
+	for _, key := range []string{"provider", "title", "author", "isbn", "asin"} {
+		if value := request.GetString(key, ""); value != "" {
+			payload[key] = value
+		}
+	}
+	if _, ok := request.GetArguments()["override_defaults"]; ok {
+		payload["overrideDefaults"] = request.GetBool("override_defaults", false)
+	}
+
+	body, err := absPOST(ctx, baseURL, token, fmt.Sprintf("/items/%s/match", itemID), payload)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	return mcp.NewToolResultText(string(body)), nil
+}
+
+func handleDeleteItem(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	baseURL, token, err := getABSConfig(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	itemID, err := requireNonBlankString(request, "item_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	if !request.GetBool("confirm", false) {
+		return mcp.NewToolResultError("confirm must be true to delete an item"), nil
+	}
+
+	path := fmt.Sprintf("/items/%s", itemID)
+	if request.GetBool("hard", false) {
+		path += "?hard=1"
+	}
+
+	body, err := absDELETE(ctx, baseURL, token, path)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if len(body) == 0 {
+		return mcp.NewToolResultText("Item deleted"), nil
+	}
+
+	return mcp.NewToolResultText(string(body)), nil
+}
+
 func requireNonBlankString(request mcp.CallToolRequest, key string) (string, error) {
 	value, err := request.RequireString(key)
 	if err != nil {
@@ -751,6 +1074,49 @@ func newMCPServer() *server.MCPServer {
 		mcp.WithString("episode_id", mcp.Description("Episode ID (for podcasts)")),
 	)
 	updateProgressTool := mcp.NewTool("update_progress", updateProgressOpts...)
+
+	// Item metadata tools
+	updateItemMediaOpts := append(withABSAuth(),
+		mcp.WithDescription("Update the metadata of a library item. Only the supplied fields are changed"),
+		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
+	)
+	updateItemMediaOpts = append(updateItemMediaOpts, mediaUpdateToolOptions()...)
+	updateItemMediaTool := mcp.NewTool("update_item_media", updateItemMediaOpts...)
+
+	batchUpdateItemsOpts := append(withABSAuth(),
+		mcp.WithDescription("Update the metadata of several library items in one request"),
+		mcp.WithArray("updates", mcp.Required(),
+			mcp.Description("One object per item with item_id plus the same metadata fields as update_item_media (title, subtitle, description, publisher, language, isbn, asin, published_year, published_date, explicit, abridged, authors, narrators, genres, tags, series)"),
+			mcp.Items(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"item_id": map[string]interface{}{"type": "string"},
+				},
+				"required":             []string{"item_id"},
+				"additionalProperties": true,
+			})),
+	)
+	batchUpdateItemsTool := mcp.NewTool("batch_update_items", batchUpdateItemsOpts...)
+
+	matchItemOpts := append(withABSAuth(),
+		mcp.WithDescription("Match a library item against a metadata provider and apply the result. Without a provider Audiobookshelf falls back to Google Books, so pass the library's provider such as audible.de"),
+		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
+		mcp.WithString("provider", mcp.Description("Metadata provider, e.g. audible.de, audible, google, openlibrary")),
+		mcp.WithString("title", mcp.Description("Title to search for (defaults to the item's title)")),
+		mcp.WithString("author", mcp.Description("Author to search for (defaults to the item's author)")),
+		mcp.WithString("isbn", mcp.Description("ISBN to search for")),
+		mcp.WithString("asin", mcp.Description("ASIN to look up directly")),
+		mcp.WithBoolean("override_defaults", mcp.Description("Overwrite fields that already have a value instead of only filling empty ones")),
+	)
+	matchItemTool := mcp.NewTool("match_item", matchItemOpts...)
+
+	deleteItemOpts := append(withABSAuth(),
+		mcp.WithDescription("Delete a library item. By default only the database entry is removed; a rescan can add it again while its files remain"),
+		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
+		mcp.WithBoolean("confirm", mcp.Required(), mcp.Description("Must be true to delete the item")),
+		mcp.WithBoolean("hard", mcp.Description("Also delete the item's files from disk. This cannot be undone")),
+	)
+	deleteItemTool := mcp.NewTool("delete_item", deleteItemOpts...)
 
 	// Server status/health tools
 	pingOpts := append(withABSAuth(), mcp.WithDescription("Simple health check endpoint"))
@@ -1105,6 +1471,12 @@ func newMCPServer() *server.MCPServer {
 
 		return mcp.NewToolResultText(string(body)), nil
 	})
+
+	// Add item metadata handlers
+	s.AddTool(updateItemMediaTool, handleUpdateItemMedia)
+	s.AddTool(batchUpdateItemsTool, handleBatchUpdateItems)
+	s.AddTool(matchItemTool, handleMatchItem)
+	s.AddTool(deleteItemTool, handleDeleteItem)
 
 	// Add Server status/health handlers (these are at root level, not /api)
 	s.AddTool(pingTool, createRootGETHandler("/ping"))
