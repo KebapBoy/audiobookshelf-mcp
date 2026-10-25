@@ -675,3 +675,223 @@ func TestApplyNeighbourShiftKeepsChapterOrder(t *testing.T) {
 		t.Errorf("without snapped chapters nothing moves, got %+v", none[1])
 	}
 }
+
+// stepTracks returns n tracks of 100s each as boundaries, and their total.
+func stepTracks(n int) ([]float64, float64) {
+	starts := make([]float64, n)
+	for i := range starts {
+		starts[i] = float64(i) * 100
+	}
+	return starts, float64(n) * 100
+}
+
+func TestEstimateChapterOffsetsFollowsSteps(t *testing.T) {
+	trackStarts, _ := stepTracks(30)
+	// Chapters 0-9 sit on boundaries 0..900 with no offset; from chapter 10 on
+	// the recording has 28s more than Audible before each boundary, from 20 on
+	// 40s more. Offsets must stay below half the track length (50s here). Chapter 15 starts 40s into a file.
+	var starts []float64
+	for i := 0; i < 30; i++ {
+		offset := 0.0
+		switch {
+		case i >= 20:
+			offset = 40
+		case i >= 10:
+			offset = 28
+		}
+		starts = append(starts, trackStarts[i]-offset)
+	}
+	starts[15] = trackStarts[15] + 40 - 28
+
+	offsets := estimateChapterOffsets(starts, trackStarts)
+	if offsets == nil {
+		t.Fatal("expected offsets to be estimated")
+	}
+	for i, want := range map[int]float64{2: 0, 8: 0, 12: 28, 15: 28, 18: 28, 24: 40, 29: 40} {
+		if !approxEqual(offsets[i], want) {
+			t.Errorf("chapter %d: expected offset %v, got %v", i, want, offsets[i])
+		}
+	}
+}
+
+func TestEstimateChapterOffsetsRejectsRandomDistances(t *testing.T) {
+	trackStarts, _ := stepTracks(30)
+	// Starts that have no relation to the boundaries
+	var starts []float64
+	for i := 0; i < 30; i++ {
+		starts = append(starts, float64(i)*100+float64((i*37)%90)+5)
+	}
+	if offsets := estimateChapterOffsets(starts, trackStarts); offsets != nil {
+		t.Errorf("expected no estimate for unrelated chapters, got %v", offsets)
+	}
+	if offsets := estimateChapterOffsets(starts[:5], trackStarts); offsets != nil {
+		t.Error("expected no estimate for too few chapters")
+	}
+	if offsets := estimateChapterOffsets(starts, trackStarts[:2]); offsets != nil {
+		t.Error("expected no estimate for too few tracks")
+	}
+}
+
+func TestBuildFullChaptersCorrectsSteppedOffsets(t *testing.T) {
+	trackStarts, total := stepTracks(30)
+	var audible []audibleChapter
+	for i := 0; i < 30; i++ {
+		offset := 0.0
+		if i >= 15 {
+			offset = 28
+		}
+		audible = append(audible, audibleChapter{Title: "K" + string(rune('A'+i%26)), StartOffsetMs: int64((trackStarts[i] - offset) * 1000)})
+	}
+	// A chapter in the middle of the second plateau, 40s into the file
+	audible[20].StartOffsetMs = int64((trackStarts[20] + 40 - 28) * 1000)
+
+	chapters, warnings := buildFullChapters(audible, total, trackStarts, 15)
+
+	if len(chapters) != 30 {
+		t.Fatalf("expected 30 chapters, got %d (%v)", len(chapters), warnings)
+	}
+	for i, chapter := range chapters {
+		want := trackStarts[i]
+		if i == 20 {
+			want += 40
+		}
+		if !approxEqual(chapter.Start, want) {
+			t.Errorf("chapter %d should start at %v, got %v", i, want, chapter.Start)
+		}
+	}
+	if chapters[10].AudibleStart != nil || chapters[16].AudibleStart == nil || !approxEqual(*chapters[16].AudibleStart, trackStarts[16]-28) {
+		t.Errorf("only moved chapters report audible_start, got %+v and %+v", chapters[10], chapters[16])
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "corrected by up to 28s") {
+		t.Errorf("expected one note about the correction, got %v", warnings)
+	}
+}
+
+func trackFiles(durations ...float64) []absAudioFile {
+	files := make([]absAudioFile, len(durations))
+	for i, duration := range durations {
+		files[i] = absAudioFile{Index: i + 1, Ino: string(rune('a' + i)), Duration: duration}
+		files[i].Metadata.Filename = string(rune('a'+i)) + ".mp3"
+	}
+	return files
+}
+
+func TestBuildTrackChapters(t *testing.T) {
+	audible := []audibleChapter{
+		{Title: "Kapitel 1", StartOffsetMs: 0},
+		{Title: "Kapitel 2", StartOffsetMs: 100000},
+		{Title: "Kapitel 3", StartOffsetMs: 300000},
+	}
+
+	chapters, warnings, err := buildTrackChapters(audible, trackFiles(100, 200, 50))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []plannedChapter{
+		{Index: 0, Title: "Kapitel 1", Start: 0, End: 100},
+		{Index: 1, Title: "Kapitel 2", Start: 100, End: 300},
+		{Index: 2, Title: "Kapitel 3", Start: 300, End: 350},
+	}
+	if !reflect.DeepEqual(chapters, want) || len(warnings) != 0 {
+		t.Errorf("unexpected result\n got: %+v %v\nwant: %+v", chapters, warnings, want)
+	}
+}
+
+func TestBuildTrackChaptersUsesPlaybackOrderAndSkipsExcluded(t *testing.T) {
+	files := trackFiles(10, 20, 30)
+	files[0].Index, files[1].Index, files[2].Index = 3, 1, 2
+	files[2].Exclude = true
+	files[2].Index = -1
+	audible := []audibleChapter{{Title: "A", StartOffsetMs: 0}, {Title: "B", StartOffsetMs: 20000}}
+
+	chapters, _, err := buildTrackChapters(audible, files)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chapters) != 2 || chapters[0].End != 20 || chapters[1].End != 30 {
+		t.Errorf("expected the 20s track first, then the 10s track, got %+v", chapters)
+	}
+}
+
+func TestBuildTrackChaptersErrorsAndWarnings(t *testing.T) {
+	audible := []audibleChapter{{Title: "A", StartOffsetMs: 0}, {Title: "B", StartOffsetMs: 100000}}
+	if _, _, err := buildTrackChapters(audible, trackFiles(100, 100, 100)); err == nil || !strings.Contains(err.Error(), "3 tracks but Audible lists 2") {
+		t.Errorf("expected a count error, got %v", err)
+	}
+
+	// The first track is 60s longer than the first Audible chapter
+	_, warnings, err := buildTrackChapters(audible, trackFiles(160, 100))
+	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0], "60s longer") {
+		t.Errorf("expected a warning about the longer track, got %v (%v)", warnings, err)
+	}
+}
+
+func TestApplyAudibleChaptersTracksMode(t *testing.T) {
+	item := bookItemJSON("B01A2B3C4D", []map[string]interface{}{
+		{"id": 0, "start": 0.0, "end": 1800.0, "title": "old"},
+	}, "1.mp3", "2.mp3", "3.mp3")
+	recorder := chapterFixtureServer(t, item, map[string]interface{}{
+		"asin": "B01A2B3C4D", "runtimeLengthMs": 1800000,
+		"chapters": []map[string]interface{}{
+			{"title": "Eins", "startOffsetMs": 0, "lengthMs": 600000},
+			{"title": "Zwei", "startOffsetMs": 600000, "lengthMs": 600000},
+			{"title": "Drei", "startOffsetMs": 1200000, "lengthMs": 600000},
+		},
+	})
+	defer recorder.Close()
+
+	result := callRegisteredTool(t, newMCPServer(), "apply_audible_chapters", map[string]interface{}{
+		"base_url": recorder.URL, "token": "test-token", "item_id": "book-1", "mode": "tracks", "dry_run": false,
+	})
+	if result.IsError {
+		t.Fatalf("returned error: %v", result)
+	}
+	last, _ := recorder.LastRequest()
+	want := map[string]interface{}{"chapters": []interface{}{
+		map[string]interface{}{"title": "Eins", "start": 0.0, "end": 600.0},
+		map[string]interface{}{"title": "Zwei", "start": 600.0, "end": 1200.0},
+		map[string]interface{}{"title": "Drei", "start": 1200.0, "end": 1800.0},
+	}}
+	if body := decodeBody(t, last.Body); !reflect.DeepEqual(body, want) {
+		t.Errorf("unexpected body\n got: %#v\nwant: %#v", body, want)
+	}
+}
+
+func TestApplyAudibleChaptersStretchToAudio(t *testing.T) {
+	// Audible runs 1% longer than the recording and the chapters do not line up
+	item := bookItemJSON("B01A2B3C4D", nil, "1.mp3", "2.mp3", "3.mp3") // 1800s
+	recorder := chapterFixtureServer(t, item, map[string]interface{}{
+		"asin": "B01A2B3C4D", "runtimeLengthMs": 1818000,
+		"chapters": []map[string]interface{}{
+			{"title": "A", "startOffsetMs": 0, "lengthMs": 606000},
+			{"title": "B", "startOffsetMs": 606000, "lengthMs": 606000},
+			{"title": "C", "startOffsetMs": 1212000, "lengthMs": 606000},
+		},
+	})
+	defer recorder.Close()
+
+	params := map[string]interface{}{"base_url": recorder.URL, "token": "test-token", "item_id": "book-1", "mode": "full", "remove_branding": false, "snap_tolerance_sec": 0.0}
+	params["stretch_to_audio"] = true
+	result := callRegisteredTool(t, newMCPServer(), "apply_audible_chapters", params)
+	if result.IsError {
+		t.Fatalf("returned error: %v", result)
+	}
+	var preview struct {
+		Factor   float64          `json:"stretch_factor"`
+		Chapters []plannedChapter `json:"chapters"`
+	}
+	decodeResultText(t, result, &preview)
+	if math.Abs(preview.Factor-1800.0/1818.0) > 1e-9 {
+		t.Errorf("unexpected stretch factor %v", preview.Factor)
+	}
+	for i, want := range []float64{0, 600, 1200} {
+		if math.Abs(preview.Chapters[i].Start-want) > 0.01 {
+			t.Errorf("chapter %d should start at %v, got %v", i, want, preview.Chapters[i].Start)
+		}
+	}
+
+	params["mode"] = "titles"
+	if result := callRegisteredTool(t, newMCPServer(), "apply_audible_chapters", params); !result.IsError {
+		t.Error("stretch_to_audio must be refused outside of full mode")
+	}
+}

@@ -1216,11 +1216,12 @@ func newMCPServer() *server.MCPServer {
 	applyAudibleChaptersOpts := append(withABSAuth(),
 		mcp.WithDescription("Apply Audible chapters to a library item. Runs as a preview unless dry_run is false"),
 		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
-		mcp.WithString("mode", mcp.Description(`"titles" keeps the existing chapter times and only takes the titles by position (default); "full" replaces the chapters with the Audible chapter times`)),
+		mcp.WithString("mode", mcp.Description(`"titles" keeps the existing chapter times and only takes the titles by position (default); "full" replaces the chapters with the Audible chapter times, corrected for an offset between the recording and Audible when most chapters start on file boundaries; "tracks" makes one chapter per audio file and names it after the Audible chapter at the same position, which needs as many files as chapters`)),
 		mcp.WithString("asin", mcp.Description("Audible ASIN (defaults to the item's ASIN)")),
 		mcp.WithString("region", mcp.Description("Audible region such as de or us (Audiobookshelf defaults to us)")),
 		mcp.WithBoolean("remove_branding", mcp.Description("Remove the Audible intro and outro from the chapter times. When omitted, both variants are compared against the audio file boundaries and the one that lines up better is used; the result reports the choice")),
 		mcp.WithNumber("snap_tolerance_sec", mcp.Description("In full mode, move chapter starts that lie within this many seconds of an audio file boundary onto that boundary, so a chapter does not begin with the end of the previous file (default 15, 0 disables). Chapters in the middle of a file follow the shift of the nearest chapter that snapped, which covers a constant offset or a slow drift between the recording and Audible")),
+		mcp.WithBoolean("stretch_to_audio", mcp.Description(`In full mode, scale the Audible times so the Audible runtime matches the length of the audio. Use it when the recording is slightly faster or slower than Audible and no chapters line up with file boundaries to measure the offset. The result is an estimate`)),
 		mcp.WithBoolean("allow_count_mismatch", mcp.Description("In titles mode, rename by position even if the chapter counts differ")),
 		mcp.WithBoolean("dry_run", mcp.Description("Only show what would change (default true)")),
 	)
