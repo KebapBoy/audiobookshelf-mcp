@@ -1118,6 +1118,56 @@ func newMCPServer() *server.MCPServer {
 	)
 	deleteItemTool := mcp.NewTool("delete_item", deleteItemOpts...)
 
+	// Chapter and track tools
+	searchChaptersOpts := append(withABSAuth(),
+		mcp.WithDescription("Look up the chapters of an Audible audiobook by ASIN"),
+		mcp.WithString("asin", mcp.Required(), mcp.Description("Audible ASIN")),
+		mcp.WithString("region", mcp.Description("Audible region such as de, us, uk, fr, it, es, ca, au, jp, in (Audiobookshelf defaults to us)")),
+	)
+	searchChaptersTool := mcp.NewTool("search_chapters", searchChaptersOpts...)
+
+	updateItemChaptersOpts := append(withABSAuth(),
+		mcp.WithDescription("Replace the chapters of a library item"),
+		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
+		mcp.WithArray("chapters", mcp.Required(),
+			mcp.Description("All chapters in order, with start and end in seconds"),
+			mcp.Items(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"title": map[string]interface{}{"type": "string"},
+					"start": map[string]interface{}{"type": "number"},
+					"end":   map[string]interface{}{"type": "number"},
+				},
+				"required": []string{"title", "start", "end"},
+			})),
+	)
+	updateItemChaptersTool := mcp.NewTool("update_item_chapters", updateItemChaptersOpts...)
+
+	applyAudibleChaptersOpts := append(withABSAuth(),
+		mcp.WithDescription("Apply Audible chapters to a library item. Runs as a preview unless dry_run is false"),
+		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
+		mcp.WithString("mode", mcp.Description(`"titles" keeps the existing chapter times and only takes the titles by position (default); "full" replaces the chapters with the Audible chapter times`)),
+		mcp.WithString("asin", mcp.Description("Audible ASIN (defaults to the item's ASIN)")),
+		mcp.WithString("region", mcp.Description("Audible region such as de or us (Audiobookshelf defaults to us)")),
+		mcp.WithBoolean("remove_branding", mcp.Description("Remove the Audible intro and outro from the chapter times (default true)")),
+		mcp.WithNumber("snap_tolerance_sec", mcp.Description("In full mode, move chapter starts that lie within this many seconds of an audio file boundary onto that boundary, so a chapter does not begin with the end of the previous file (default 10, 0 disables)")),
+		mcp.WithBoolean("allow_count_mismatch", mcp.Description("In titles mode, rename by position even if the chapter counts differ")),
+		mcp.WithBoolean("dry_run", mcp.Description("Only show what would change (default true)")),
+	)
+	applyAudibleChaptersTool := mcp.NewTool("apply_audible_chapters", applyAudibleChaptersOpts...)
+
+	reorderTracksOpts := append(withABSAuth(),
+		mcp.WithDescription("Sort or reorder the audio tracks of a library item. Runs as a preview unless dry_run is false. Chapters are not changed"),
+		mcp.WithString("item_id", mcp.Required(), mcp.Description("Library item ID")),
+		mcp.WithString("sort_by", mcp.Description(`Sort all tracks: "filename" (natural order, 2 before 10), "track_tag" (disc and track number from the audio tags) or "filename_number" (disc and track number found in the file name)`)),
+		mcp.WithBoolean("reverse", mcp.Description("Reverse the order after sorting")),
+		mcp.WithArray("order", mcp.Description("File names or inodes to put first, in this order; the remaining tracks follow in their current or sorted order"), mcp.WithStringItems()),
+		mcp.WithArray("exclude", mcp.Description("File names or inodes to exclude from playback"), mcp.WithStringItems()),
+		mcp.WithArray("include", mcp.Description("File names or inodes of excluded tracks to include again"), mcp.WithStringItems()),
+		mcp.WithBoolean("dry_run", mcp.Description("Only show what would change (default true)")),
+	)
+	reorderTracksTool := mcp.NewTool("reorder_tracks", reorderTracksOpts...)
+
 	// Server status/health tools
 	pingOpts := append(withABSAuth(), mcp.WithDescription("Simple health check endpoint"))
 	pingTool := mcp.NewTool("ping", pingOpts...)
@@ -1477,6 +1527,12 @@ func newMCPServer() *server.MCPServer {
 	s.AddTool(batchUpdateItemsTool, handleBatchUpdateItems)
 	s.AddTool(matchItemTool, handleMatchItem)
 	s.AddTool(deleteItemTool, handleDeleteItem)
+
+	// Add chapter and track handlers
+	s.AddTool(searchChaptersTool, handleSearchChapters)
+	s.AddTool(updateItemChaptersTool, handleUpdateItemChapters)
+	s.AddTool(applyAudibleChaptersTool, handleApplyAudibleChapters)
+	s.AddTool(reorderTracksTool, handleReorderTracks)
 
 	// Add Server status/health handlers (these are at root level, not /api)
 	s.AddTool(pingTool, createRootGETHandler("/ping"))
