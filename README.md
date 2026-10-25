@@ -386,7 +386,7 @@ docker compose down            # stop and remove the container
   - At least one metadata field is required
 - **batch_update_items** - Update the metadata of several library items in one request
   - Required: `updates` (array of objects, each with `item_id` plus the same fields as `update_item_media`)
-- **match_item** - Match a library item against a metadata provider and apply the result
+- **match_item** - Match a library item against a metadata provider and apply the result. Like `update_item_media`, it returns a summary (metadata with long texts shortened, plus file and chapter counts) instead of the whole item
   - Required: `item_id`
   - Optional: `provider` (for example `audible.de`; Audiobookshelf falls back to Google Books when omitted), `title`, `author`, `isbn`, `asin`, `override_defaults` (boolean; overwrite fields that already have a value)
 - **delete_item** - Delete a library item
@@ -404,7 +404,7 @@ These tools modify data, so the API key needs a user with update (and for `delet
   - Required: `item_id`, `chapters` (array of objects with `title`, `start` and `end` in seconds)
 - **apply_audible_chapters** - Apply Audible chapters to a library item. Runs as a preview unless `dry_run` is `false`
   - Required: `item_id`
-  - Optional: `mode` (`titles` keeps the existing chapter times and only takes the titles by position, which suits audio files that are already split by chapter; `full` replaces the chapters with the Audible times), `asin` (defaults to the item's ASIN), `region`, `remove_branding` (remove the Audible intro and outro, default `true`), `snap_tolerance_sec` (in `full` mode, move chapter starts within this many seconds of an audio file boundary onto that boundary so a chapter does not begin with the end of the previous file; default `10`, `0` disables), `allow_count_mismatch` (in `titles` mode, rename by position even if the chapter counts differ), `dry_run` (default `true`)
+  - Optional: `mode` (`titles` keeps the existing chapter times and only takes the titles by position, which suits audio files that are already split by chapter; `full` replaces the chapters with the Audible times), `asin` (defaults to the item's ASIN), `region`, `remove_branding` (remove the Audible intro and outro from the chapter times; when omitted, both variants are compared against the audio file boundaries and the one that lines up better is used, and the result reports the choice as `branding_removed`), `snap_tolerance_sec` (in `full` mode, move chapter starts within this many seconds of an audio file boundary onto that boundary so a chapter does not begin with the end of the previous file; default `10`, `0` disables), `allow_count_mismatch` (in `titles` mode, rename by position even if the chapter counts differ), `dry_run` (default `true`)
   - The result lists old and new titles, times and any chapter that was moved, and warns when the Audible runtime differs from the audio by more than a few seconds, which usually means a different edition
 - **reorder_tracks** - Sort or reorder the audio tracks of a library item. Runs as a preview unless `dry_run` is `false`. Chapters are not changed
   - Required: `item_id`, and at least one of the options below

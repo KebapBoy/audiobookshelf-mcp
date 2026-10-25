@@ -674,7 +674,7 @@ func handleUpdateItemMedia(ctx context.Context, request mcp.CallToolRequest) (*m
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	return mcp.NewToolResultText(string(body)), nil
+	return mcp.NewToolResultText(compactItemResponse(body)), nil
 }
 
 func handleBatchUpdateItems(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -742,8 +742,52 @@ func handleMatchItem(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	return mcp.NewToolResultText(string(body)), nil
+	return mcp.NewToolResultText(compactItemResponse(body)), nil
 }
+
+// compactItemResponse reduces the {updated, libraryItem} response of the item
+// update and match endpoints, which contains the whole item with every audio
+// file and chapter, to its metadata and a few counts. Long texts are
+// shortened. Responses of any other shape are returned unchanged.
+func compactItemResponse(body []byte) string {
+	var response struct {
+		Updated     bool `json:"updated"`
+		LibraryItem struct {
+			Media struct {
+				Metadata   map[string]interface{} `json:"metadata"`
+				AudioFiles []json.RawMessage      `json:"audioFiles"`
+				Chapters   []json.RawMessage      `json:"chapters"`
+			} `json:"media"`
+		} `json:"libraryItem"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil || response.LibraryItem.Media.Metadata == nil {
+		return string(body)
+	}
+
+	metadata := response.LibraryItem.Media.Metadata
+	for key, value := range metadata {
+		if text, ok := value.(string); ok {
+			if runes := []rune(text); len(runes) > compactTextLimit {
+				metadata[key] = string(runes[:compactTextLimit]) + "…"
+			}
+		}
+	}
+
+	compact, err := json.Marshal(map[string]interface{}{
+		"updated":          response.Updated,
+		"metadata":         metadata,
+		"audio_file_count": len(response.LibraryItem.Media.AudioFiles),
+		"chapter_count":    len(response.LibraryItem.Media.Chapters),
+	})
+	if err != nil {
+		return string(body)
+	}
+	return string(compact)
+}
+
+// compactTextLimit is the number of characters kept of long metadata texts
+// such as the description in compact item responses.
+const compactTextLimit = 300
 
 func handleDeleteItem(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	baseURL, token, err := getABSConfig(request)
@@ -1149,7 +1193,7 @@ func newMCPServer() *server.MCPServer {
 		mcp.WithString("mode", mcp.Description(`"titles" keeps the existing chapter times and only takes the titles by position (default); "full" replaces the chapters with the Audible chapter times`)),
 		mcp.WithString("asin", mcp.Description("Audible ASIN (defaults to the item's ASIN)")),
 		mcp.WithString("region", mcp.Description("Audible region such as de or us (Audiobookshelf defaults to us)")),
-		mcp.WithBoolean("remove_branding", mcp.Description("Remove the Audible intro and outro from the chapter times (default true)")),
+		mcp.WithBoolean("remove_branding", mcp.Description("Remove the Audible intro and outro from the chapter times. When omitted, both variants are compared against the audio file boundaries and the one that lines up better is used; the result reports the choice")),
 		mcp.WithNumber("snap_tolerance_sec", mcp.Description("In full mode, move chapter starts that lie within this many seconds of an audio file boundary onto that boundary, so a chapter does not begin with the end of the previous file (default 10, 0 disables)")),
 		mcp.WithBoolean("allow_count_mismatch", mcp.Description("In titles mode, rename by position even if the chapter counts differ")),
 		mcp.WithBoolean("dry_run", mcp.Description("Only show what would change (default true)")),

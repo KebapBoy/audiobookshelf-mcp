@@ -131,6 +131,39 @@ func removeAudibleBranding(data *audibleChapterData) {
 	data.RuntimeLengthMs -= intro + outro
 }
 
+// brandingAlignmentScore adds up how far each chapter start is from the
+// nearest track boundary, with every distance capped so chapters that start in
+// the middle of a file weigh the same for both variants.
+func brandingAlignmentScore(data audibleChapterData, trackStarts []float64) float64 {
+	const maxDistance = 30.0
+	score := 0.0
+	for _, chapter := range data.Chapters {
+		start := float64(chapter.StartOffsetMs) / 1000
+		best := maxDistance
+		for _, trackStart := range trackStarts {
+			if diff := math.Abs(trackStart - start); diff < best {
+				best = diff
+			}
+		}
+		score += best
+	}
+	return score
+}
+
+// shouldRemoveBranding decides whether the audio was cut without the Audible
+// intro and outro. It compares both variants against the track boundaries and
+// only removes the branding if that lines more chapters up with the files. It
+// needs at least two tracks, otherwise there is nothing to compare against.
+func shouldRemoveBranding(data audibleChapterData, trackStarts []float64) bool {
+	if len(trackStarts) < 2 {
+		return false
+	}
+	removed := data
+	removed.Chapters = append([]audibleChapter(nil), data.Chapters...)
+	removeAudibleBranding(&removed)
+	return brandingAlignmentScore(removed, trackStarts) < brandingAlignmentScore(data, trackStarts)
+}
+
 func nearestTrackStart(start float64, trackStarts []float64, tolerance float64) (float64, bool) {
 	best, bestDiff, found := 0.0, tolerance, false
 	for _, trackStart := range trackStarts {
@@ -305,7 +338,14 @@ func handleApplyAudibleChapters(ctx context.Context, request mcp.CallToolRequest
 	if mode != "titles" && mode != "full" {
 		return mcp.NewToolResultError(`mode must be "titles" or "full"`), nil
 	}
-	removeBranding := request.GetBool("remove_branding", true)
+	removeBranding, brandingExplicit := false, false
+	if value, ok := request.GetArguments()["remove_branding"]; ok {
+		flag, isBool := value.(bool)
+		if !isBool {
+			return mcp.NewToolResultError("remove_branding must be a boolean"), nil
+		}
+		removeBranding, brandingExplicit = flag, true
+	}
 	tolerance := request.GetFloat("snap_tolerance_sec", 10)
 	if tolerance < 0 {
 		return mcp.NewToolResultError("snap_tolerance_sec must not be negative"), nil
@@ -337,13 +377,16 @@ func handleApplyAudibleChapters(ctx context.Context, request mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("Audible lists no chapters for %s", asin)), nil
 	}
 
-	if removeBranding {
-		removeAudibleBranding(&data)
-	}
-
 	trackStarts, duration := trackStartOffsets(book.Media.AudioFiles)
 	if duration <= 0 {
 		return mcp.NewToolResultError("the item has no playable audio tracks"), nil
+	}
+
+	if !brandingExplicit {
+		removeBranding = shouldRemoveBranding(data, trackStarts)
+	}
+	if removeBranding {
+		removeAudibleBranding(&data)
 	}
 
 	var warnings []string
@@ -376,6 +419,8 @@ func handleApplyAudibleChapters(ctx context.Context, request mcp.CallToolRequest
 		"title":              book.Media.Metadata.Title,
 		"asin":               asin,
 		"mode":               mode,
+		"branding_removed":   removeBranding,
+		"branding_detected":  !brandingExplicit,
 		"dry_run":            dryRun,
 		"audio_duration_sec": duration,
 		"audible_runtime_ms": data.RuntimeLengthMs,

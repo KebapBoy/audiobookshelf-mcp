@@ -253,7 +253,7 @@ func TestApplyAudibleChaptersFullDryRunThenApply(t *testing.T) {
 	defer recorder.Close()
 
 	params := func(extra map[string]interface{}) map[string]interface{} {
-		base := map[string]interface{}{"base_url": recorder.URL, "token": "test-token", "item_id": "book-1", "mode": "full", "region": "de"}
+		base := map[string]interface{}{"base_url": recorder.URL, "token": "test-token", "item_id": "book-1", "mode": "full", "region": "de", "remove_branding": true}
 		for k, v := range extra {
 			base[k] = v
 		}
@@ -324,7 +324,7 @@ func TestApplyAudibleChaptersTitlesMode(t *testing.T) {
 	defer recorder.Close()
 
 	result := callRegisteredTool(t, newMCPServer(), "apply_audible_chapters", map[string]interface{}{
-		"base_url": recorder.URL, "token": "test-token", "item_id": "book-1", "dry_run": false,
+		"base_url": recorder.URL, "token": "test-token", "item_id": "book-1", "dry_run": false, "remove_branding": true,
 	})
 	if result.IsError {
 		t.Fatalf("returned error: %v", result)
@@ -496,5 +496,124 @@ func TestUpdateItemChaptersToolErrors(t *testing.T) {
 				t.Errorf("expected tool error, got %v", result)
 			}
 		})
+	}
+}
+
+func TestShouldRemoveBranding(t *testing.T) {
+	trackStarts := []float64{0, 600, 1200, 1800}
+	chapters := func(offsetMs int64) audibleChapterData {
+		return audibleChapterData{
+			BrandIntroDurationMs: 4180,
+			BrandOutroDurationMs: 2694,
+			Chapters: []audibleChapter{
+				{Title: "A", StartOffsetMs: 0, LengthMs: 600000 + offsetMs},
+				{Title: "B", StartOffsetMs: 600000 + offsetMs, LengthMs: 600000},
+				{Title: "C", StartOffsetMs: 1200000 + offsetMs, LengthMs: 600000},
+				{Title: "D", StartOffsetMs: 1800000 + offsetMs, LengthMs: 600000},
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		data        audibleChapterData
+		trackStarts []float64
+		want        bool
+	}{
+		{"audio contains the intro", chapters(0), trackStarts, false},
+		{"audio was cut without the intro", chapters(4180), trackStarts, true},
+		{"single track gives no signal", chapters(4180), []float64{0}, false},
+		{"no tracks gives no signal", chapters(4180), nil, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := append([]audibleChapter(nil), tt.data.Chapters...)
+			if got := shouldRemoveBranding(tt.data, tt.trackStarts); got != tt.want {
+				t.Errorf("shouldRemoveBranding = %v, want %v", got, tt.want)
+			}
+			if !reflect.DeepEqual(tt.data.Chapters, original) {
+				t.Error("shouldRemoveBranding must not modify the chapters it is given")
+			}
+		})
+	}
+}
+
+func TestApplyAudibleChaptersDetectsBranding(t *testing.T) {
+	audibleWithOffset := func(offsetMs int) map[string]interface{} {
+		return map[string]interface{}{
+			"asin":                 "B01A2B3C4D",
+			"brandIntroDurationMs": 4180,
+			"brandOutroDurationMs": 2694,
+			"runtimeLengthMs":      1800000 + offsetMs,
+			"chapters": []map[string]interface{}{
+				{"title": "A", "startOffsetMs": 0, "lengthMs": 600000 + offsetMs},
+				{"title": "B", "startOffsetMs": 600000 + offsetMs, "lengthMs": 600000},
+				{"title": "C", "startOffsetMs": 1200000 + offsetMs, "lengthMs": 600000},
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		audible     map[string]interface{}
+		params      map[string]interface{}
+		wantRemoved bool
+		wantDetect  bool
+	}{
+		{"audio contains the intro", audibleWithOffset(0), map[string]interface{}{}, false, true},
+		{"audio was cut without the intro", audibleWithOffset(4180), map[string]interface{}{}, true, true},
+		{"explicit false wins", audibleWithOffset(4180), map[string]interface{}{"remove_branding": false}, false, false},
+		{"explicit true wins", audibleWithOffset(0), map[string]interface{}{"remove_branding": true}, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := bookItemJSON("B01A2B3C4D", nil, "1.mp3", "2.mp3", "3.mp3")
+			recorder := chapterFixtureServer(t, item, tt.audible)
+			defer recorder.Close()
+
+			params := map[string]interface{}{"base_url": recorder.URL, "token": "test-token", "item_id": "book-1", "mode": "full"}
+			for k, v := range tt.params {
+				params[k] = v
+			}
+			result := callRegisteredTool(t, newMCPServer(), "apply_audible_chapters", params)
+			if result.IsError {
+				t.Fatalf("returned error: %v", result)
+			}
+
+			var preview struct {
+				Removed  bool             `json:"branding_removed"`
+				Detected bool             `json:"branding_detected"`
+				Chapters []plannedChapter `json:"chapters"`
+			}
+			decodeResultText(t, result, &preview)
+			if preview.Removed != tt.wantRemoved || preview.Detected != tt.wantDetect {
+				t.Errorf("expected removed=%v detected=%v, got removed=%v detected=%v", tt.wantRemoved, tt.wantDetect, preview.Removed, preview.Detected)
+			}
+			if len(preview.Chapters) != 3 {
+				t.Fatalf("expected 3 chapters, got %+v", preview.Chapters)
+			}
+			if tt.wantDetect {
+				for i, want := range []float64{0, 600, 1200} {
+					if !approxEqual(preview.Chapters[i].Start, want) || preview.Chapters[i].SnappedFrom != nil {
+						t.Errorf("chapter %d should start exactly at %v without snapping, got %+v", i, want, preview.Chapters[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestApplyAudibleChaptersRejectsNonBooleanBranding(t *testing.T) {
+	item := bookItemJSON("B01A2B3C4D", nil, "1.mp3")
+	recorder := chapterFixtureServer(t, item, audibleFixture())
+	defer recorder.Close()
+
+	result := callRegisteredTool(t, newMCPServer(), "apply_audible_chapters", map[string]interface{}{
+		"base_url": recorder.URL, "token": "test-token", "item_id": "book-1", "remove_branding": "yes",
+	})
+	if !result.IsError {
+		t.Errorf("expected tool error, got %v", result)
 	}
 }

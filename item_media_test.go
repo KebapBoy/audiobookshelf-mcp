@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 func decodeBody(t *testing.T, body []byte) interface{} {
@@ -428,6 +431,91 @@ func TestItemMediaToolsReturnABSErrors(t *testing.T) {
 			tt.params["token"] = "test-token"
 			if result := callRegisteredTool(t, newMCPServer(), tt.tool, tt.params); !result.IsError {
 				t.Errorf("expected tool error, got %v", result)
+			}
+		})
+	}
+}
+
+func TestCompactItemResponse(t *testing.T) {
+	long := strings.Repeat("ä", compactTextLimit+50)
+	body, _ := json.Marshal(map[string]interface{}{
+		"updated": true,
+		"libraryItem": map[string]interface{}{
+			"media": map[string]interface{}{
+				"metadata":   map[string]interface{}{"title": "Das Paket", "description": long, "publishedYear": "2016"},
+				"audioFiles": []interface{}{map[string]interface{}{"ino": "1"}, map[string]interface{}{"ino": "2"}},
+				"chapters":   []interface{}{map[string]interface{}{"id": 0}},
+			},
+		},
+	})
+
+	var got struct {
+		Updated        bool                   `json:"updated"`
+		Metadata       map[string]interface{} `json:"metadata"`
+		AudioFileCount int                    `json:"audio_file_count"`
+		ChapterCount   int                    `json:"chapter_count"`
+	}
+	if err := json.Unmarshal([]byte(compactItemResponse(body)), &got); err != nil {
+		t.Fatalf("decode compact response: %v", err)
+	}
+
+	if !got.Updated || got.AudioFileCount != 2 || got.ChapterCount != 1 {
+		t.Errorf("unexpected summary %+v", got)
+	}
+	if got.Metadata["title"] != "Das Paket" || got.Metadata["publishedYear"] != "2016" {
+		t.Errorf("short fields must stay untouched, got %v", got.Metadata)
+	}
+	description, _ := got.Metadata["description"].(string)
+	if want := strings.Repeat("ä", compactTextLimit) + "…"; description != want {
+		t.Errorf("expected the description cut to %d characters, got %d", compactTextLimit, len([]rune(description)))
+	}
+}
+
+func TestCompactItemResponseKeepsOtherShapes(t *testing.T) {
+	for _, body := range []string{`{"updated":true}`, `{"success":true,"updates":2}`, `not json`, ``} {
+		if got := compactItemResponse([]byte(body)); got != body {
+			t.Errorf("expected %q unchanged, got %q", body, got)
+		}
+	}
+}
+
+func TestMatchItemAndUpdateItemMediaReturnCompactResponses(t *testing.T) {
+	recorder := newRecordingServer(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"updated": true,
+			"libraryItem": map[string]interface{}{
+				"media": map[string]interface{}{
+					"metadata":   map[string]interface{}{"title": "Das Paket"},
+					"audioFiles": []interface{}{map[string]interface{}{"ino": "1", "metaTags": strings.Repeat("x", 5000)}},
+					"chapters":   []interface{}{},
+				},
+			},
+		})
+	})
+	defer recorder.Close()
+
+	tools := map[string]map[string]interface{}{
+		"match_item":        {"item_id": "book-1"},
+		"update_item_media": {"item_id": "book-1", "title": "Das Paket"},
+	}
+	for name, params := range tools {
+		t.Run(name, func(t *testing.T) {
+			params["base_url"] = recorder.URL
+			params["token"] = "test-token"
+			result := callRegisteredTool(t, newMCPServer(), name, params)
+			if result.IsError {
+				t.Fatalf("returned error: %v", result)
+			}
+			var got struct {
+				Updated        bool `json:"updated"`
+				AudioFileCount int  `json:"audio_file_count"`
+			}
+			text := result.Content[0].(mcp.TextContent).Text
+			if strings.Contains(text, "metaTags") {
+				t.Errorf("response was not compacted: %.200s", text)
+			}
+			if err := json.Unmarshal([]byte(text), &got); err != nil || !got.Updated || got.AudioFileCount != 1 {
+				t.Errorf("unexpected response %q (%v)", text, err)
 			}
 		})
 	}
