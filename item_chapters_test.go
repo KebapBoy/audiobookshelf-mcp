@@ -96,8 +96,8 @@ func TestBuildFullChaptersSnapsToTrackBoundaries(t *testing.T) {
 	want := []view{
 		{"A", 0, 600, false},
 		{"B", 600, 1200, true},
-		{"C", 1200, 1500, true},
-		{"D", 1500, 1800, false},
+		{"C", 1200, 1497, true},
+		{"D", 1497, 1800, false},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("unexpected chapters\n got: %+v\nwant: %+v", got, want)
@@ -140,8 +140,11 @@ func TestBuildFullChaptersNeverSnapsOntoPreviousStart(t *testing.T) {
 	if len(chapters) != 3 || len(warnings) != 0 {
 		t.Fatalf("expected 3 chapters and no warnings, got %d chapters, warnings %v", len(chapters), warnings)
 	}
-	if !approxEqual(chapters[1].Start, 600) || !approxEqual(chapters[2].Start, 601) {
-		t.Errorf("expected starts 600 and 601, got %v and %v", chapters[1].Start, chapters[2].Start)
+	if chapters[2].SnappedFrom != nil {
+		t.Errorf("a second chapter must not snap onto the same boundary, got %+v", chapters[2])
+	}
+	if !approxEqual(chapters[1].Start, 600) || !approxEqual(chapters[2].Start, 603) {
+		t.Errorf("expected starts 600 and 603 (shifted like its snapped neighbour), got %v and %v", chapters[1].Start, chapters[2].Start)
 	}
 }
 
@@ -615,5 +618,60 @@ func TestApplyAudibleChaptersRejectsNonBooleanBranding(t *testing.T) {
 	})
 	if !result.IsError {
 		t.Errorf("expected tool error, got %v", result)
+	}
+}
+
+func TestBuildFullChaptersFollowsConstantOffset(t *testing.T) {
+	// The recording has a 12s longer lead-in than Audible, so every Audible
+	// time is 12s too early, including the chapters inside the files.
+	audible := []audibleChapter{
+		{Title: "A", StartOffsetMs: 0},
+		{Title: "B", StartOffsetMs: 288000},
+		{Title: "C", StartOffsetMs: 588000},
+		{Title: "D", StartOffsetMs: 888000},
+		{Title: "E", StartOffsetMs: 1188000},
+	}
+
+	chapters, warnings := buildFullChapters(audible, 1800, []float64{0, 600, 1200}, 15)
+
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings %v", warnings)
+	}
+	wantStarts := []float64{0, 300, 600, 900, 1200}
+	for i, want := range wantStarts {
+		if !approxEqual(chapters[i].Start, want) {
+			t.Errorf("chapter %d should start at %v, got %v", i, want, chapters[i].Start)
+		}
+	}
+	if chapters[1].SnappedFrom != nil || chapters[1].ShiftedFrom == nil || !approxEqual(*chapters[1].ShiftedFrom, 288) {
+		t.Errorf("chapter B should be marked as shifted from 288, got %+v", chapters[1])
+	}
+	if chapters[2].SnappedFrom == nil || chapters[2].ShiftedFrom != nil {
+		t.Errorf("chapter C should be marked as snapped only, got %+v", chapters[2])
+	}
+}
+
+func TestApplyNeighbourShiftKeepsChapterOrder(t *testing.T) {
+	from := func(v float64) *float64 { return &v }
+	chapters := []plannedChapter{
+		{Title: "A", Start: 0},
+		{Title: "B", Start: 100, SnappedFrom: from(90)}, // shifted by +10
+		{Title: "C", Start: 105},                        // +10 would reach 115, past D
+		{Title: "D", Start: 110},
+	}
+
+	applyNeighbourShift(chapters)
+
+	if !approxEqual(chapters[2].Start, 105) || chapters[2].ShiftedFrom != nil {
+		t.Errorf("a shift that would break the order must be skipped, got %+v", chapters[2])
+	}
+	if !approxEqual(chapters[3].Start, 120) || chapters[3].ShiftedFrom == nil {
+		t.Errorf("D still follows B, got %+v", chapters[3])
+	}
+
+	none := []plannedChapter{{Title: "A", Start: 0}, {Title: "B", Start: 50}}
+	applyNeighbourShift(none)
+	if !approxEqual(none[1].Start, 50) {
+		t.Errorf("without snapped chapters nothing moves, got %+v", none[1])
 	}
 }

@@ -12,6 +12,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// defaultSnapToleranceSec is how far a chapter start may be from a track
+// boundary and still move onto it.
+const defaultSnapToleranceSec = 15.0
+
 // Differences between the Audible runtime and the audio duration beyond this
 // many seconds usually mean the recording is a different edition.
 const runtimeMismatchWarnSec = 5.0
@@ -70,6 +74,7 @@ type plannedChapter struct {
 	Start       float64  `json:"start"`
 	End         float64  `json:"end"`
 	SnappedFrom *float64 `json:"snapped_from,omitempty"`
+	ShiftedFrom *float64 `json:"shifted_from,omitempty"`
 }
 
 func fetchBookItem(ctx context.Context, baseURL, token, itemID string) (*absBookItem, error) {
@@ -208,6 +213,10 @@ func buildFullChapters(audible []audibleChapter, duration float64, trackStarts [
 		chapters = append(chapters, planned)
 	}
 
+	if tolerance > 0 {
+		applyNeighbourShift(chapters)
+	}
+
 	for i := range chapters {
 		chapters[i].Index = i
 		if i+1 < len(chapters) {
@@ -218,6 +227,44 @@ func buildFullChapters(audible []audibleChapter, duration float64, trackStarts [
 	}
 
 	return chapters, warnings
+}
+
+// applyNeighbourShift moves chapters that did not snap onto a track boundary,
+// because they start in the middle of a file, by the shift of the nearest
+// chapter that did. Recordings often differ from the Audible chapter list by a
+// constant offset, for example a longer lead-in, or by a slow drift, and the
+// snapped chapters measure exactly that. A chapter keeps its time if moving it
+// would break the order of the chapters.
+func applyNeighbourShift(chapters []plannedChapter) {
+	var snapped []int
+	for i, chapter := range chapters {
+		if chapter.SnappedFrom != nil {
+			snapped = append(snapped, i)
+		}
+	}
+	if len(snapped) == 0 {
+		return
+	}
+
+	for i := 1; i < len(chapters); i++ {
+		if chapters[i].SnappedFrom != nil {
+			continue
+		}
+		nearest := snapped[0]
+		for _, j := range snapped {
+			if math.Abs(chapters[i].Start-*chapters[j].SnappedFrom) < math.Abs(chapters[i].Start-*chapters[nearest].SnappedFrom) {
+				nearest = j
+			}
+		}
+		shift := chapters[nearest].Start - *chapters[nearest].SnappedFrom
+		original := chapters[i].Start
+		moved := original + shift
+		if moved <= chapters[i-1].Start || (i+1 < len(chapters) && moved >= chapters[i+1].Start) {
+			continue
+		}
+		chapters[i].Start = moved
+		chapters[i].ShiftedFrom = &original
+	}
 }
 
 // buildTitleOnlyChapters keeps the existing chapter times and takes the titles
@@ -346,7 +393,7 @@ func handleApplyAudibleChapters(ctx context.Context, request mcp.CallToolRequest
 		}
 		removeBranding, brandingExplicit = flag, true
 	}
-	tolerance := request.GetFloat("snap_tolerance_sec", 10)
+	tolerance := request.GetFloat("snap_tolerance_sec", defaultSnapToleranceSec)
 	if tolerance < 0 {
 		return mcp.NewToolResultError("snap_tolerance_sec must not be negative"), nil
 	}

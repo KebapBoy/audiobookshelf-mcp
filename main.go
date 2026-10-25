@@ -1220,7 +1220,7 @@ func newMCPServer() *server.MCPServer {
 		mcp.WithString("asin", mcp.Description("Audible ASIN (defaults to the item's ASIN)")),
 		mcp.WithString("region", mcp.Description("Audible region such as de or us (Audiobookshelf defaults to us)")),
 		mcp.WithBoolean("remove_branding", mcp.Description("Remove the Audible intro and outro from the chapter times. When omitted, both variants are compared against the audio file boundaries and the one that lines up better is used; the result reports the choice")),
-		mcp.WithNumber("snap_tolerance_sec", mcp.Description("In full mode, move chapter starts that lie within this many seconds of an audio file boundary onto that boundary, so a chapter does not begin with the end of the previous file (default 10, 0 disables)")),
+		mcp.WithNumber("snap_tolerance_sec", mcp.Description("In full mode, move chapter starts that lie within this many seconds of an audio file boundary onto that boundary, so a chapter does not begin with the end of the previous file (default 15, 0 disables). Chapters in the middle of a file follow the shift of the nearest chapter that snapped, which covers a constant offset or a slow drift between the recording and Audible")),
 		mcp.WithBoolean("allow_count_mismatch", mcp.Description("In titles mode, rename by position even if the chapter counts differ")),
 		mcp.WithBoolean("dry_run", mcp.Description("Only show what would change (default true)")),
 	)
