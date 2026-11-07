@@ -1,5 +1,7 @@
 # Audiobookshelf MCP Server
 
+> **This is a modified fork** of [schmidt-software/audiobookshelf-mcp](https://github.com/schmidt-software/audiobookshelf-mcp), itself a modified fork of the original [michaeldvinci/audiobookshelf-mcp](https://github.com/michaeldvinci/audiobookshelf-mcp), maintained by [KebapBoy](https://github.com/KebapBoy). What each of them changed, with dates, is listed in the [CHANGELOG](CHANGELOG.md).
+
 A Model Context Protocol (MCP) server that provides tools to interact with your [Audiobookshelf](https://www.audiobookshelf.org/) instance. Access your libraries, audiobooks, podcasts, authors, collections, and playlists through AI assistants that support MCP.
 
 ## Disclaimer
